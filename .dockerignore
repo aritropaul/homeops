@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.env.*
+.git
+.gitignore
+_recovered_app
+*.md
