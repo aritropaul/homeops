@@ -11,9 +11,16 @@ import type {
   ThermostatDeviceState,
   LockTracking,
   Throttles,
+  Occupancy,
+  ManualOverride,
+  ComfortDecision,
+  ThermalSample,
 } from './types.js';
 
 const STORE_KEY = 'homeops:state';
+const THERMAL_KEY = 'homeops:thermal';
+// Keep ~3h of history at a 30s poll: plenty to learn rates, bounded in size.
+const THERMAL_MAX_SAMPLES = 360;
 
 function createDefaultState(): HomeOpsState {
   const now = new Date().toISOString();
@@ -125,7 +132,7 @@ export class StateStore {
   }
 
   async isThrottled(
-    action: 'unlock' | 'lock' | 'preheat' | 'autolock',
+    action: 'unlock' | 'lock' | 'preheat' | 'autolock' | 'comfort',
     minMs: number,
   ): Promise<boolean> {
     const state = await this.getState();
@@ -143,13 +150,18 @@ export class StateStore {
       case 'autolock':
         lastTs = state.lockTracking.lastAutoLockAttempt;
         break;
+      case 'comfort':
+        lastTs = state.throttles.lastComfortAt;
+        break;
     }
     if (!lastTs) return false;
     const elapsed = Date.now() - new Date(lastTs).getTime();
     return elapsed < minMs;
   }
 
-  async recordAction(action: 'unlock' | 'lock' | 'preheat' | 'autolock'): Promise<void> {
+  async recordAction(
+    action: 'unlock' | 'lock' | 'preheat' | 'autolock' | 'comfort',
+  ): Promise<void> {
     const now = new Date().toISOString();
     const state = await this.getState();
     switch (action) {
@@ -165,8 +177,91 @@ export class StateStore {
       case 'autolock':
         state.lockTracking.lastAutoLockAttempt = now;
         break;
+      case 'comfort':
+        state.throttles.lastComfortAt = now;
+        break;
     }
     await this.saveState(state);
+  }
+
+  // ── Comfort engine state ───────────────────────────────────────────────────
+
+  /** Set the comfort intent (home/away/arriving/sleep). */
+  async setOccupancy(intent: Occupancy, etaTs?: string): Promise<void> {
+    const state = await this.getState();
+    state.occupancy = { intent, since: new Date().toISOString(), etaTs };
+    await this.saveState(state);
+  }
+
+  /** Current intent, defaulting to 'home' when never set. */
+  async getOccupancy(): Promise<Occupancy> {
+    const state = await this.getState();
+    return state.occupancy?.intent ?? 'home';
+  }
+
+  /** Pin a manual setpoint on B2 for the configured TTL. */
+  async setManualOverride(
+    setpointF: number,
+    mode: ManualOverride['mode'],
+    ttlMs: number,
+  ): Promise<void> {
+    const state = await this.getState();
+    state.manualOverride = {
+      setpointF,
+      mode,
+      untilTs: new Date(Date.now() + ttlMs).toISOString(),
+    };
+    await this.saveState(state);
+  }
+
+  /** Returns the override only if it hasn't expired; clears it if it has. */
+  async getActiveOverride(): Promise<ManualOverride | null> {
+    const state = await this.getState();
+    const ov = state.manualOverride;
+    if (!ov) return null;
+    if (Date.now() >= new Date(ov.untilTs).getTime()) {
+      state.manualOverride = undefined;
+      await this.saveState(state);
+      return null;
+    }
+    return ov;
+  }
+
+  async clearManualOverride(): Promise<void> {
+    const state = await this.getState();
+    if (state.manualOverride) {
+      state.manualOverride = undefined;
+      await this.saveState(state);
+    }
+  }
+
+  async setLastComfortDecision(decision: ComfortDecision): Promise<void> {
+    const state = await this.getState();
+    state.lastComfortDecision = decision;
+    await this.saveState(state);
+  }
+
+  // ── Thermal history (separate key so the main state blob stays small) ───────
+
+  async appendThermalSample(sample: ThermalSample): Promise<void> {
+    try {
+      const existing = (await this.redis.get<ThermalSample[]>(THERMAL_KEY)) ?? [];
+      existing.push(sample);
+      const trimmed = existing.slice(-THERMAL_MAX_SAMPLES);
+      await this.redis.set(THERMAL_KEY, trimmed);
+    } catch (err) {
+      // Thermal history is best-effort; never let it break the poll.
+      logger.warn({ err }, 'Failed to append thermal sample');
+    }
+  }
+
+  async getThermalSamples(): Promise<ThermalSample[]> {
+    try {
+      return (await this.redis.get<ThermalSample[]>(THERMAL_KEY)) ?? [];
+    } catch (err) {
+      logger.warn({ err }, 'Failed to read thermal samples');
+      return [];
+    }
   }
 }
 

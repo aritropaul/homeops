@@ -14,12 +14,17 @@ import { logger } from './logger.js';
 import { SmartRentClient, parseLockState, parseThermostatState } from './smartrent.js';
 import { SmartRentSocket, type AttributeEvent } from './socket.js';
 import { getStore } from './store.js';
+import { getWeather } from './weather.js';
+import { decideComfort, type ComfortInputs } from './comfort.js';
+import { estimateRates, shouldPreconditionNow } from './thermal.js';
 import type {
   SmartRentDevice,
   LockDeviceState,
   ThermostatDeviceState,
   LockTracking,
   ThermostatMode,
+  Occupancy,
+  ComfortDecision,
 } from './types.js';
 
 let pollTimer: NodeJS.Timeout | null = null;
@@ -105,6 +110,23 @@ export async function pollDevices(): Promise<void> {
 
     state.lastPollTs = now;
     await store.saveState(state);
+
+    // Record B2 thermal history (for rate learning) and run the comfort engine
+    // on this fresh snapshot. Both are best-effort and must not fail the poll.
+    const b2 = state.devices.B2;
+    await store.appendThermalSample({
+      ts: now,
+      indoorF: b2.currentTempF,
+      outdoorF: (await getWeather())?.tempF,
+      mode: b2.mode,
+      setpointF: b2.targetTempF,
+    });
+    if (config.comfortAuto) {
+      await runComfortControl().catch((err) =>
+        logger.error({ err }, 'Comfort control (poll) failed'),
+      );
+    }
+
     logger.debug({ durationMs: Date.now() - t0 }, 'REST poll complete');
   } catch (err) {
     logger.error({ err, durationMs: Date.now() - t0 }, 'REST poll failed');
@@ -199,6 +221,134 @@ async function applyAttributeEvent(event: AttributeEvent): Promise<void> {
   }
 
   await store.saveState(state);
+
+  // A real-time B2 temperature change may have crossed the comfort band — react
+  // immediately rather than waiting for the next REST tick. The command
+  // throttle and the "already in target state" check keep this from looping on
+  // our own writes (which arrive back as mode/setpoint events, not current_temp).
+  if (key === 'B2' && event.name === 'current_temp' && config.comfortAuto) {
+    void runComfortControl().catch((err) =>
+      logger.error({ err }, 'Comfort control (socket) failed'),
+    );
+  }
+}
+
+// ── Comfort engine control loop ───────────────────────────────────────────────
+
+/** True when B2 is already doing essentially what the decision asks. */
+function decisionMatchesDevice(
+  decision: ComfortDecision,
+  b2: ThermostatDeviceState,
+): boolean {
+  if (decision.mode === 'off') return b2.mode === 'off';
+  if (b2.mode !== decision.mode) return false;
+  if (decision.setpointF === undefined || b2.targetTempF === undefined) return false;
+  return Math.abs(b2.targetTempF - decision.setpointF) < 0.5;
+}
+
+/**
+ * Evaluate the comfort engine for B2 and apply a command if needed.
+ *
+ * Guards, in order: a manual override suspends the engine entirely; an
+ * 'arriving' intent only pre-conditions once within the learned lead window;
+ * the decision is skipped if B2 is already in the target state (hysteresis);
+ * and commands are rate-limited (anti-short-cycle) unless forced. `force`
+ * is used by explicit user actions (/arrive, /leave) that should act now.
+ */
+export async function runComfortControl(
+  opts: { force?: boolean } = {},
+): Promise<ComfortDecision | null> {
+  const store = getStore();
+  const client = getSmartRentClient();
+  const prefs = config.comfort;
+
+  const override = await store.getActiveOverride();
+  if (override) {
+    logger.debug({ override }, 'Comfort engine suspended by manual override');
+    return null;
+  }
+
+  const state = await store.getState();
+  const b2 = state.devices.B2;
+  const occState = state.occupancy;
+  const now = new Date();
+  const outdoor = await getWeather();
+
+  const inputs: ComfortInputs = {
+    occupancy: (occState?.intent ?? 'home') as Occupancy,
+    now,
+    indoorTempF: b2.currentTempF,
+    indoorHumidityPct: b2.humidityPct,
+    outdoor,
+  };
+
+  // 'arriving' — hold until the room needs to start moving toward the home
+  // target, using the learned heat/cool rate. Once inside that window (or once
+  // the ETA passes), treat it as 'home' and condition normally.
+  if (inputs.occupancy === 'arriving' && occState?.etaTs) {
+    const etaMinutes = (new Date(occState.etaTs).getTime() - now.getTime()) / 60000;
+    if (etaMinutes <= 0) {
+      await store.setOccupancy('home');
+      inputs.occupancy = 'home';
+    } else if (b2.currentTempF !== undefined) {
+      const homeDecision = decideComfort({ ...inputs, occupancy: 'home' }, prefs);
+      const tooEarly =
+        homeDecision &&
+        homeDecision.mode !== 'off' &&
+        homeDecision.setpointF !== undefined &&
+        !shouldPreconditionNow(
+          etaMinutes,
+          b2.currentTempF,
+          homeDecision.setpointF,
+          homeDecision.mode,
+          estimateRates(await store.getThermalSamples()),
+        );
+      if (tooEarly) {
+        const hold: ComfortDecision = {
+          mode: 'off',
+          reason: `arriving in ${Math.round(etaMinutes)} min — preconditioning not needed yet`,
+          ts: now.toISOString(),
+        };
+        await store.setLastComfortDecision(hold);
+        return hold;
+      }
+      inputs.occupancy = 'home';
+    }
+  }
+
+  const decision = decideComfort(inputs, prefs);
+  if (!decision) {
+    logger.debug('Comfort engine: no indoor reading, holding');
+    return null;
+  }
+  await store.setLastComfortDecision(decision);
+
+  if (decisionMatchesDevice(decision, b2)) {
+    logger.debug({ decision }, 'Comfort engine: B2 already in target state');
+    return decision;
+  }
+
+  if (!opts.force && (await store.isThrottled('comfort', prefs.controlMinMinutes * 60 * 1000))) {
+    logger.debug({ decision }, 'Comfort engine: throttled, deferring command');
+    return decision;
+  }
+
+  try {
+    if (decision.mode === 'off') {
+      await client.setThermostatMode(config.devices.thermostatB2Id, 'off');
+    } else {
+      await client.setThermostatTarget(
+        config.devices.thermostatB2Id,
+        decision.setpointF!,
+        decision.mode,
+      );
+    }
+    await store.recordAction('comfort');
+    logger.info({ decision }, 'Comfort engine applied to B2');
+  } catch (err) {
+    logger.error({ err, decision }, 'Comfort engine failed to apply');
+  }
+  return decision;
 }
 
 // ── Auto-lock rule ──────────────────────────────────────────────────────────

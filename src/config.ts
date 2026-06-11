@@ -34,6 +34,27 @@ function optionalEnvBool(name: string, defaultValue: boolean): boolean {
   return value.toLowerCase() === 'true' || value === '1';
 }
 
+function optionalEnvFloat(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) return defaultValue;
+  const parsed = parseFloat(value);
+  if (isNaN(parsed)) {
+    throw new Error(`Invalid number for ${name}: ${value}`);
+  }
+  return parsed;
+}
+
+/** Optional float that stays undefined when unset (e.g. location coords). */
+function optionalEnvFloatOrUndef(name: string): number | undefined {
+  const value = process.env[name];
+  if (!value) return undefined;
+  const parsed = parseFloat(value);
+  if (isNaN(parsed)) {
+    throw new Error(`Invalid number for ${name}: ${value}`);
+  }
+  return parsed;
+}
+
 function enumEnv<T extends string>(
   name: string,
   allowed: readonly T[],
@@ -47,6 +68,44 @@ function enumEnv<T extends string>(
   }
   return value;
 }
+
+/**
+ * Tunables for the comfort engine. The whole point is that there is no season
+ * or mode here — just the comfort band per context and how the room's
+ * perceived temperature is computed. The engine picks heat/cool/off itself.
+ */
+export type ComfortPrefs = {
+  /**
+   * Comfort range when home and awake. The engine idles inside [low, high] and
+   * only acts when the room leaves it — then it drives to the range's center,
+   * so a room drifting 2° cool in summer never trips the heater.
+   */
+  homeLowF: number;
+  homeHighF: number;
+  /** Comfort range during the sleep window (cooler for sleep). */
+  sleepLowF: number;
+  sleepHighF: number;
+  /** Away coast band — engine only acts at these extremes while you're out. */
+  awayMaxF: number;
+  awayMinF: number;
+  /** Small anti-chatter margin beyond the band edge before acting. */
+  deadbandF: number;
+  /** Sleep window, 24h local clock. Wraps midnight when start > end. */
+  sleepStartHour: number;
+  sleepEndHour: number;
+  /** Humidity → perceived-temperature model. */
+  humidityRefTempF: number;
+  humidityRefPct: number;
+  humidityPerPctF: number;
+  humidityCapF: number;
+  /** Forecast highs at/above these tighten the away ceiling. */
+  hotForecastF: number;
+  veryHotForecastF: number;
+  /** Min spacing between engine commands to B2 (anti-short-cycle), minutes. */
+  controlMinMinutes: number;
+  /** How long a manual /thermostat pin suspends the engine, minutes. */
+  overrideTtlMinutes: number;
+};
 
 export type Config = {
   port: number;
@@ -81,6 +140,11 @@ export type Config = {
     preheatMinMs: number;
     autolockAttemptMinMs: number;
   };
+  /** Weather location for the comfort engine. Undefined = weather disabled. */
+  location: { latitude?: number; longitude?: number };
+  /** When true, the engine autonomously holds B2 to the comfort band each poll. */
+  comfortAuto: boolean;
+  comfort: ComfortPrefs;
 };
 
 let cachedConfig: Config | null = null;
@@ -134,6 +198,33 @@ export function loadConfig(): Config {
       lockMinMs: 30 * 1000,
       preheatMinMs: 10 * 60 * 1000,
       autolockAttemptMinMs: 2 * 60 * 1000,
+    },
+
+    location: {
+      latitude: optionalEnvFloatOrUndef('LATITUDE'),
+      longitude: optionalEnvFloatOrUndef('LONGITUDE'),
+    },
+
+    comfortAuto: optionalEnvBool('ENABLE_COMFORT_AUTO', true),
+
+    comfort: {
+      homeLowF: optionalEnvInt('COMFORT_HOME_LOW_F', 68),
+      homeHighF: optionalEnvInt('COMFORT_HOME_HIGH_F', 72),
+      sleepLowF: optionalEnvInt('COMFORT_SLEEP_LOW_F', 65),
+      sleepHighF: optionalEnvInt('COMFORT_SLEEP_HIGH_F', 70),
+      awayMaxF: optionalEnvInt('COMFORT_AWAY_MAX_F', 82),
+      awayMinF: optionalEnvInt('COMFORT_AWAY_MIN_F', 60),
+      deadbandF: optionalEnvFloat('COMFORT_DEADBAND_F', 0.5),
+      sleepStartHour: optionalEnvInt('COMFORT_SLEEP_START_HOUR', 22),
+      sleepEndHour: optionalEnvInt('COMFORT_SLEEP_END_HOUR', 7),
+      humidityRefTempF: optionalEnvInt('COMFORT_HUMIDITY_REF_TEMP_F', 74),
+      humidityRefPct: optionalEnvInt('COMFORT_HUMIDITY_REF_PCT', 50),
+      humidityPerPctF: optionalEnvFloat('COMFORT_HUMIDITY_PER_PCT_F', 0.1),
+      humidityCapF: optionalEnvFloat('COMFORT_HUMIDITY_CAP_F', 3),
+      hotForecastF: optionalEnvInt('COMFORT_HOT_FORECAST_F', 90),
+      veryHotForecastF: optionalEnvInt('COMFORT_VERY_HOT_FORECAST_F', 95),
+      controlMinMinutes: optionalEnvInt('COMFORT_CONTROL_MIN_MINUTES', 5),
+      overrideTtlMinutes: optionalEnvInt('COMFORT_OVERRIDE_TTL_MINUTES', 120),
     },
   };
   return cachedConfig;
