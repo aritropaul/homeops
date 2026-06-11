@@ -11,6 +11,8 @@
  * alone, it just loses the anticipatory layer. We cache so a 30s control loop
  * doesn't hammer the API.
  */
+import https from 'node:https';
+import { Resolver, type LookupOptions, type LookupAddress } from 'node:dns';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import type { OutdoorWeather } from './types.js';
@@ -29,6 +31,77 @@ function sleep(ms: number): Promise<void> {
 // retries win (this is exactly why SmartRent survives on the same machine).
 function backoffMs(attempt: number): number {
   return Math.min(500 * 2 ** attempt, 4000) + Math.floor(Math.random() * 250);
+}
+
+/**
+ * Fly's internal DNS forwarder cannot resolve api.open-meteo.com (its
+ * authoritative DNS is Hetzner-hosted) and returns EAI_AGAIN forever, so
+ * getaddrinfo — and therefore global fetch — never succeeds. Resolve through
+ * public DNS via c-ares instead, then hand the IP to the request as a custom
+ * lookup. The hostname is unchanged, so TLS SNI and certificate validation
+ * still happen against api.open-meteo.com.
+ */
+const resolver = new Resolver({ timeout: 4000, tries: 2 });
+resolver.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8']);
+
+function publicLookup(
+  hostname: string,
+  options: LookupOptions,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | LookupAddress[],
+    family?: number,
+  ) => void,
+): void {
+  resolver.resolve4(hostname, (err, addresses) => {
+    if (err || !addresses || addresses.length === 0) {
+      callback(err ?? new Error(`no A record for ${hostname}`), '', 4);
+      return;
+    }
+    if (options.all) {
+      callback(
+        null,
+        addresses.map((address) => ({ address, family: 4 })),
+      );
+    } else {
+      callback(null, addresses[0], 4);
+    }
+  });
+}
+
+function httpsGetJson(url: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      {
+        lookup: publicLookup,
+        headers: { Accept: 'application/json', 'User-Agent': 'HomeOps/1.0.0' },
+        timeout: REQUEST_TIMEOUT_MS,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status !== 200) {
+          res.resume();
+          reject(new Error(`Open-Meteo error: ${status}`));
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('Open-Meteo request timed out')));
+    req.on('error', reject);
+  });
 }
 
 interface OpenMeteoResponse {
@@ -60,15 +133,7 @@ async function fetchWeatherOnce(): Promise<OutdoorWeather> {
     `&daily=temperature_2m_max,temperature_2m_min` +
     `&temperature_unit=fahrenheit&timezone=auto&forecast_days=1`;
 
-  const response = await fetch(url, {
-    headers: { Accept: 'application/json', 'User-Agent': 'HomeOps/1.0.0' },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Open-Meteo error: ${response.status}`);
-  }
-
-  const data = (await response.json()) as OpenMeteoResponse;
+  const data = (await httpsGetJson(url)) as OpenMeteoResponse;
   const tempF = data.current?.temperature_2m;
   const humidityPct = data.current?.relative_humidity_2m;
   const forecastHighF = data.daily?.temperature_2m_max?.[0];
@@ -90,17 +155,13 @@ async function fetchWeatherOnce(): Promise<OutdoorWeather> {
 
 async function fetchWeather(): Promise<OutdoorWeather> {
   let lastErr: unknown;
+  // The request is an idempotent GET, so retry on any transient failure.
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       return await fetchWeatherOnce();
     } catch (err) {
       lastErr = err;
-      // EAI_AGAIN / network failures surface as TypeError; timeouts as
-      // Abort/TimeoutError. Both are transient — back off and retry.
-      const isAbort =
-        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
-      const isNetwork = err instanceof TypeError;
-      if ((isAbort || isNetwork) && attempt < MAX_RETRIES) {
+      if (attempt < MAX_RETRIES) {
         await sleep(backoffMs(attempt));
         continue;
       }
