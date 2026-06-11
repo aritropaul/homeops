@@ -19,6 +19,7 @@ const prefs: ComfortPrefs = {
   humidityCapF: 3,
   hotForecastF: 90,
   veryHotForecastF: 95,
+  coldForecastF: 55,
   controlMinMinutes: 5,
   overrideTtlMinutes: 120,
 };
@@ -129,6 +130,40 @@ describe('decideComfort — away coast band is weather-aware', () => {
     );
     expect(d?.mode).toBe('heat');
     expect(d?.setpointF).toBe(60);
+  });
+});
+
+describe("decideComfort — don't fight the weather", () => {
+  it('suppresses heating on a hot day and just idles', () => {
+    // Room is cold (AC overcooled it) but the day's high is 98°F.
+    const d = decideComfort(
+      { occupancy: 'home', now: DAY, indoorTempF: 64, outdoor: weather(95, 98) },
+      prefs,
+    );
+    expect(d?.mode).toBe('off');
+    expect(d?.reason).toMatch(/hot out/);
+  });
+
+  it('still heats a cold room on a mild day', () => {
+    const d = decideComfort(
+      { occupancy: 'home', now: DAY, indoorTempF: 64, outdoor: weather(68, 72) },
+      prefs,
+    );
+    expect(d?.mode).toBe('heat');
+  });
+
+  it('suppresses cooling on a cold day and just idles', () => {
+    const d = decideComfort(
+      { occupancy: 'home', now: DAY, indoorTempF: 80, outdoor: weather(48, 52) },
+      prefs,
+    );
+    expect(d?.mode).toBe('off');
+    expect(d?.reason).toMatch(/cold out/);
+  });
+
+  it('still cools a hot room with no weather data (guard needs a forecast)', () => {
+    const d = decideComfort({ occupancy: 'home', now: DAY, indoorTempF: 80 }, prefs);
+    expect(d?.mode).toBe('cool');
   });
 });
 

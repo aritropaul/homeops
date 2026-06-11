@@ -124,7 +124,17 @@ export function decideComfort(
   const humid = offset > 0 ? ` (feels ${effectiveF.toFixed(1)}°F at ${inputs.indoorHumidityPct}% RH)` : '';
   const out = inputs.outdoor ? `, outdoor ${inputs.outdoor.tempF.toFixed(0)}°F/high ${inputs.outdoor.forecastHighF.toFixed(0)}°F` : '';
 
+  const high = inputs.outdoor?.forecastHighF;
+
   if (effectiveF > band.ceilingF + db) {
+    // Don't run the AC on a cold day — let the room drift down on its own.
+    if (typeof high === 'number' && high <= prefs.coldForecastF) {
+      return {
+        mode: 'off',
+        reason: `room ${inputs.indoorTempF.toFixed(1)}°F > ceiling but cold out (high ${high.toFixed(0)}°F) → idle, won't run AC`,
+        ts,
+      };
+    }
     return {
       mode: 'cool',
       setpointF: band.coolToF,
@@ -133,6 +143,14 @@ export function decideComfort(
     };
   }
   if (effectiveF < band.floorF - db) {
+    // Don't run the heater on a hot day — passive heat gain will warm it.
+    if (typeof high === 'number' && high >= prefs.hotForecastF) {
+      return {
+        mode: 'off',
+        reason: `room ${inputs.indoorTempF.toFixed(1)}°F < floor but hot out (high ${high.toFixed(0)}°F) → idle, won't run heat`,
+        ts,
+      };
+    }
     return {
       mode: 'heat',
       setpointF: band.heatToF,

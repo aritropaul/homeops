@@ -101,6 +101,12 @@ export type ComfortPrefs = {
   /** Forecast highs at/above these tighten the away ceiling. */
   hotForecastF: number;
   veryHotForecastF: number;
+  /**
+   * Don't fight the weather: suppress heating when the day's high is at/above
+   * hotForecastF, and suppress cooling when it's at/below coldForecastF — just
+   * idle and let the room drift instead of running the opposite system.
+   */
+  coldForecastF: number;
   /** Min spacing between engine commands to B2 (anti-short-cycle), minutes. */
   controlMinMinutes: number;
   /** How long a manual /thermostat pin suspends the engine, minutes. */
@@ -223,6 +229,7 @@ export function loadConfig(): Config {
       humidityCapF: optionalEnvFloat('COMFORT_HUMIDITY_CAP_F', 3),
       hotForecastF: optionalEnvInt('COMFORT_HOT_FORECAST_F', 90),
       veryHotForecastF: optionalEnvInt('COMFORT_VERY_HOT_FORECAST_F', 95),
+      coldForecastF: optionalEnvInt('COMFORT_COLD_FORECAST_F', 55),
       controlMinMinutes: optionalEnvInt('COMFORT_CONTROL_MIN_MINUTES', 5),
       overrideTtlMinutes: optionalEnvInt('COMFORT_OVERRIDE_TTL_MINUTES', 120),
     },
