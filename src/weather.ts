@@ -18,6 +18,18 @@ import type { OutdoorWeather } from './types.js';
 const BASE_URL = 'https://api.open-meteo.com/v1/forecast';
 const REQUEST_TIMEOUT_MS = 6_000;
 const CACHE_TTL_MS = 15 * 60 * 1000; // Open-Meteo refreshes ~every 15 min.
+const MAX_RETRIES = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Bounded backoff with jitter, like the SmartRent client. Fly's resolver
+// intermittently returns EAI_AGAIN for external hosts; a single attempt loses,
+// retries win (this is exactly why SmartRent survives on the same machine).
+function backoffMs(attempt: number): number {
+  return Math.min(500 * 2 ** attempt, 4000) + Math.floor(Math.random() * 250);
+}
 
 interface OpenMeteoResponse {
   current?: {
@@ -40,7 +52,7 @@ function configured(): boolean {
   );
 }
 
-async function fetchWeather(): Promise<OutdoorWeather | null> {
+async function fetchWeatherOnce(): Promise<OutdoorWeather> {
   const { latitude, longitude } = config.location;
   const url =
     `${BASE_URL}?latitude=${latitude}&longitude=${longitude}` +
@@ -76,6 +88,28 @@ async function fetchWeather(): Promise<OutdoorWeather | null> {
   };
 }
 
+async function fetchWeather(): Promise<OutdoorWeather> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fetchWeatherOnce();
+    } catch (err) {
+      lastErr = err;
+      // EAI_AGAIN / network failures surface as TypeError; timeouts as
+      // Abort/TimeoutError. Both are transient — back off and retry.
+      const isAbort =
+        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+      const isNetwork = err instanceof TypeError;
+      if ((isAbort || isNetwork) && attempt < MAX_RETRIES) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error('weather fetch failed after retries');
+}
+
 /**
  * Returns current outdoor weather, cached for CACHE_TTL_MS. Returns null when
  * location is unconfigured or the API is unreachable — callers must treat
@@ -93,17 +127,28 @@ export async function getWeather(): Promise<OutdoorWeather | null> {
   if (inflight) return inflight;
   inflight = fetchWeather()
     .then((w) => {
-      if (w) cached = w;
-      return w;
+      cached = w;
+      return w as OutdoorWeather | null;
     })
     .catch((err) => {
-      logger.warn({ err }, 'Weather fetch failed, using stale/none');
+      logger.warn({ err }, 'Weather fetch failed after retries, using stale/none');
       return cached; // fall back to last good reading if we have one
     })
     .finally(() => {
       inflight = null;
     });
   return inflight;
+}
+
+/**
+ * Non-blocking accessor for read paths like /status: returns the last known
+ * reading immediately (possibly stale or null) and kicks off a background
+ * refresh if it's stale, so the endpoint never waits on a retry storm.
+ */
+export function getCachedWeather(): OutdoorWeather | null {
+  const stale = !cached || Date.now() - new Date(cached.ts).getTime() >= CACHE_TTL_MS;
+  if (configured() && stale) void getWeather().catch(() => {});
+  return cached;
 }
 
 /** Test/diagnostic helper. */

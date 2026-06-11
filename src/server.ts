@@ -8,7 +8,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { getStore } from './store.js';
 import { startPoller, isPollerRunning, isSocketConnected } from './poller.js';
-import { getWeather } from './weather.js';
+import { getCachedWeather } from './weather.js';
 import {
   handleArrive,
   handleLeave,
@@ -216,7 +216,7 @@ export function createServer(): FastifyInstance {
         occupancy: state.occupancy,
         manualOverride: state.manualOverride,
         comfort: state.lastComfortDecision,
-        weather: await getWeather(),
+        weather: getCachedWeather(),
         lastError: state.lastError,
         socketConnected: isSocketConnected(),
       });
