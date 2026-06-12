@@ -59,13 +59,18 @@ export interface OccupancyState {
 }
 
 /**
- * A manual setpoint the user pinned via /thermostat. While active, the comfort
- * engine leaves B2 alone so it doesn't fight the human.
+ * A respected manual OFF on B2 (via /thermostat/:name/off). While active, the
+ * comfort engine leaves B2 alone so it doesn't switch the human's "off" back on.
+ * A manual ON does not create one of these — it hands B2 back to the engine.
  */
 export interface ManualOverride {
   setpointF: number;
   mode: 'heat' | 'cool' | 'auto' | 'off';
-  untilTs: string;
+  /**
+   * When the pin auto-expires. Absent = no expiry: the override holds until you
+   * change it again or send a presence command (/arrive, /leave, /sleep).
+   */
+  untilTs?: string;
 }
 
 /** The engine's most recent decision — surfaced on /status for visibility. */

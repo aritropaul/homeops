@@ -69,6 +69,43 @@ describe('StateStore throttle logic', () => {
   });
 });
 
+describe('StateStore manual override', () => {
+  beforeEach(() => fakeKv.clear());
+
+  it('a positive ttl sets untilTs and expires after it elapses', async () => {
+    const store = new StateStore();
+    await store.setManualOverride(70, 'cool', 60_000);
+    const ov = await store.getActiveOverride();
+    expect(ov?.untilTs).toBeTruthy();
+    expect(ov?.setpointF).toBe(70);
+  });
+
+  it('ttl <= 0 means no expiry: untilTs is absent and it stays active', async () => {
+    const store = new StateStore();
+    await store.setManualOverride(72, 'cool', 0);
+    const ov = await store.getActiveOverride();
+    expect(ov).not.toBeNull();
+    expect(ov?.untilTs).toBeUndefined();
+    expect(ov?.mode).toBe('cool');
+  });
+
+  it('an indefinite override survives a fresh store read', async () => {
+    const store = new StateStore();
+    await store.setManualOverride(0, 'off', 0);
+    const fresh = new StateStore();
+    const ov = await fresh.getActiveOverride();
+    expect(ov?.mode).toBe('off');
+    expect(ov?.untilTs).toBeUndefined();
+  });
+
+  it('clearManualOverride removes an indefinite override', async () => {
+    const store = new StateStore();
+    await store.setManualOverride(72, 'cool', 0);
+    await store.clearManualOverride();
+    expect(await store.getActiveOverride()).toBeNull();
+  });
+});
+
 describe('StateStore.updatePollStatus', () => {
   beforeEach(() => fakeKv.clear());
 

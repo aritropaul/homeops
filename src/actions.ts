@@ -35,6 +35,14 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : 'unknown error';
 }
 
+/** Suffix describing how long a respected manual OFF holds the engine off B2. */
+function pausedNote(): string {
+  const ttl = config.comfort.overrideTtlMinutes;
+  return ttl > 0
+    ? ` (auto-control paused ${ttl} min)`
+    : ' (staying off until you turn it on or send /arrive or /leave)';
+}
+
 // Run an operation, swallow errors into a log+result string.
 async function runStep(
   name: string,
@@ -271,16 +279,16 @@ export async function handleSetThermostat(
 
   try {
     await client.setThermostatTarget(thermostat.deviceId, temp, targetMode);
-    // A manual set on B2 pins the engine off for a while so it won't override
-    // the human. Other rooms aren't engine-controlled, so no pin needed.
+    // Manual ON of B2 means "I'm here, keep me comfortable": assert presence and
+    // hand control back to the comfort engine. Unlike a manual OFF (which is
+    // respected indefinitely), turning B2 on does NOT pin the setpoint — it
+    // releases any prior pin and resumes presence-based auto control, which may
+    // then move B2 to the comfort band. Other rooms aren't engine-controlled.
     let note = '';
     if (thermostat.deviceId === config.devices.thermostatB2Id) {
-      await store.setManualOverride(
-        temp,
-        targetMode,
-        config.comfort.overrideTtlMinutes * 60_000,
-      );
-      note = ` (auto-control paused ${config.comfort.overrideTtlMinutes} min)`;
+      await store.clearManualOverride();
+      await store.setOccupancy('home');
+      note = ' (presence on — auto control active)';
     }
     return respond(`${thermostat.name} ${targetMode} target set to ${temp}°F${note}`);
   } catch (err) {
@@ -300,11 +308,13 @@ export async function handleThermostatOff(name: string): Promise<HomeOpsResponse
   }
   try {
     await client.setThermostatMode(thermostat.deviceId, 'off');
-    // Pin B2 off so the engine doesn't switch it back on.
+    // Manual OFF is respected: pin B2 off (no expiry by default) so the engine
+    // never switches it back on until you turn it on again or send a presence
+    // command (/arrive, /leave, /sleep).
     let note = '';
     if (thermostat.deviceId === config.devices.thermostatB2Id) {
       await store.setManualOverride(0, 'off', config.comfort.overrideTtlMinutes * 60_000);
-      note = ` (auto-control paused ${config.comfort.overrideTtlMinutes} min)`;
+      note = pausedNote();
     }
     return respond(`${thermostat.name} turned off${note}`);
   } catch (err) {

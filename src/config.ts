@@ -109,7 +109,12 @@ export type ComfortPrefs = {
   coldForecastF: number;
   /** Min spacing between engine commands to B2 (anti-short-cycle), minutes. */
   controlMinMinutes: number;
-  /** How long a manual /thermostat pin suspends the engine, minutes. */
+  /**
+   * How long a respected manual OFF on B2 keeps the engine off, minutes. 0 (the
+   * default) means no expiry: a manual off holds until you turn B2 on again or
+   * send a presence command (/arrive, /leave, /sleep). A manual ON doesn't pin —
+   * it asserts presence and hands B2 back to the engine.
+   */
   overrideTtlMinutes: number;
 };
 
@@ -231,7 +236,7 @@ export function loadConfig(): Config {
       veryHotForecastF: optionalEnvInt('COMFORT_VERY_HOT_FORECAST_F', 95),
       coldForecastF: optionalEnvInt('COMFORT_COLD_FORECAST_F', 55),
       controlMinMinutes: optionalEnvInt('COMFORT_CONTROL_MIN_MINUTES', 5),
-      overrideTtlMinutes: optionalEnvInt('COMFORT_OVERRIDE_TTL_MINUTES', 120),
+      overrideTtlMinutes: optionalEnvInt('COMFORT_OVERRIDE_TTL_MINUTES', 0),
     },
   };
   return cachedConfig;

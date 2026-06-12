@@ -199,7 +199,12 @@ export class StateStore {
     return state.occupancy?.intent ?? 'home';
   }
 
-  /** Pin a manual setpoint on B2 for the configured TTL. */
+  /**
+   * Pin a manual setpoint on B2. A positive ttlMs auto-expires the pin after
+   * that long; ttlMs <= 0 means no expiry — the pin holds until it's replaced
+   * by another manual set or cleared by a presence command (/arrive, /leave,
+   * /sleep). That's the "stays where I put it until I turn it on again" mode.
+   */
   async setManualOverride(
     setpointF: number,
     mode: ManualOverride['mode'],
@@ -209,17 +214,21 @@ export class StateStore {
     state.manualOverride = {
       setpointF,
       mode,
-      untilTs: new Date(Date.now() + ttlMs).toISOString(),
+      untilTs: ttlMs > 0 ? new Date(Date.now() + ttlMs).toISOString() : undefined,
     };
     await this.saveState(state);
   }
 
-  /** Returns the override only if it hasn't expired; clears it if it has. */
+  /**
+   * Returns the override only if it hasn't expired; clears it if it has. An
+   * override with no untilTs never expires on its own — it only goes away when
+   * replaced or explicitly cleared.
+   */
   async getActiveOverride(): Promise<ManualOverride | null> {
     const state = await this.getState();
     const ov = state.manualOverride;
     if (!ov) return null;
-    if (Date.now() >= new Date(ov.untilTs).getTime()) {
+    if (ov.untilTs && Date.now() >= new Date(ov.untilTs).getTime()) {
       state.manualOverride = undefined;
       await this.saveState(state);
       return null;
