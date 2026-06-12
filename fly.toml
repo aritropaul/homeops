@@ -9,6 +9,10 @@ primary_region = "ewr"
   LOG_LEVEL = "info"
   NODE_ENV = "production"
   PORT = "8080"
+  # The comfort engine's sleep window is evaluated in local time
+  # (comfort.ts isSleepHour -> Date.getHours()). Without this the container
+  # runs UTC and the night band kicks in ~4h early. Keep in sync with LAT/LONG.
+  TZ = "America/New_York"
 
 [http_service]
   internal_port = 8080

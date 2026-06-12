@@ -10,6 +10,10 @@ RUN npm run build
 
 FROM node:20.20.0-alpine
 WORKDIR /app
+# tzdata so the TZ env (America/New_York) resolves — Alpine ships none, and
+# without it Node's Date.getHours() falls back to UTC and the comfort engine's
+# sleep window triggers ~4h early.
+RUN apk add --no-cache tzdata
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/dist ./dist
