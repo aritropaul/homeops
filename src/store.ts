@@ -15,6 +15,7 @@ import type {
   ManualOverride,
   ComfortDecision,
   ThermalSample,
+  ThermostatMode,
 } from './types.js';
 
 const STORE_KEY = 'homeops:state';
@@ -247,6 +248,13 @@ export class StateStore {
   async setLastComfortDecision(decision: ComfortDecision): Promise<void> {
     const state = await this.getState();
     state.lastComfortDecision = decision;
+    await this.saveState(state);
+  }
+
+  /** Record the mode the engine last wrote to (or confirmed on) B2. */
+  async setLastEngineCommand(mode: ThermostatMode): Promise<void> {
+    const state = await this.getState();
+    state.lastEngineCommand = { mode, ts: new Date().toISOString() };
     await this.saveState(state);
   }
 

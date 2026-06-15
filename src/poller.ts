@@ -262,14 +262,45 @@ export async function runComfortControl(
   const client = getSmartRentClient();
   const prefs = config.comfort;
 
-  const override = await store.getActiveOverride();
-  if (override) {
-    logger.debug({ override }, 'Comfort engine suspended by manual override');
-    return null;
-  }
-
   const state = await store.getState();
   const b2 = state.devices.B2;
+
+  const override = await store.getActiveOverride();
+  if (override) {
+    // If a respected OFF is active but B2 is now running, the human turned it
+    // back on directly (thermostat/app) — release the pin and resume control.
+    if (override.mode === 'off' && b2.mode !== 'off' && b2.mode !== 'unknown') {
+      await store.clearManualOverride();
+      await store.setOccupancy('home');
+      logger.info({ b2Mode: b2.mode }, 'B2 turned on externally; clearing off-pin, resuming auto control');
+    } else {
+      logger.debug({ override }, 'Comfort engine suspended by manual override');
+      return null;
+    }
+  }
+
+  // Respect an externally-initiated OFF: if B2 is off but the engine's last
+  // command wasn't off, a human turned it off at the thermostat/app (we never
+  // see those as /thermostat commands). Pin it and stand down — "off means off"
+  // however it was turned off. The first known reading after boot just sets a
+  // baseline so a pre-existing off isn't mistaken for a fresh manual off.
+  if (b2.mode !== 'unknown') {
+    const engineMode = state.lastEngineCommand?.mode;
+    if (engineMode === undefined) {
+      await store.setLastEngineCommand(b2.mode);
+    } else if (b2.mode === 'off' && engineMode !== 'off') {
+      await store.setManualOverride(0, 'off', prefs.overrideTtlMinutes * 60_000);
+      const d: ComfortDecision = {
+        mode: 'off',
+        reason: 'B2 turned off externally → respecting it (engine stands down)',
+        ts: new Date().toISOString(),
+      };
+      await store.setLastComfortDecision(d);
+      logger.info('External OFF detected on B2; pinned manual-off, engine standing down');
+      return d;
+    }
+  }
+
   const occState = state.occupancy;
   const now = new Date();
   const outdoor = await getWeather();
@@ -324,6 +355,9 @@ export async function runComfortControl(
   await store.setLastComfortDecision(decision);
 
   if (decisionMatchesDevice(decision, b2)) {
+    // B2 already in the engine's desired mode — record it as engine-intended so
+    // a later idle-off isn't misread as a human turning it off.
+    await store.setLastEngineCommand(decision.mode);
     logger.debug({ decision }, 'Comfort engine: B2 already in target state');
     return decision;
   }
@@ -344,6 +378,7 @@ export async function runComfortControl(
       );
     }
     await store.recordAction('comfort');
+    await store.setLastEngineCommand(decision.mode);
     logger.info({ decision }, 'Comfort engine applied to B2');
   } catch (err) {
     logger.error({ err, decision }, 'Comfort engine failed to apply');

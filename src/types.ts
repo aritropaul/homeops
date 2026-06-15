@@ -112,6 +112,12 @@ export interface HomeOpsState {
   occupancy?: OccupancyState;
   /** Active manual override on B2, if any. */
   manualOverride?: ManualOverride;
+  /**
+   * The last mode the engine actually wrote to B2 (or confirmed already present).
+   * Lets us tell an engine-initiated off (idle) apart from a human turning B2
+   * off at the thermostat/app — the latter is respected like a manual off.
+   */
+  lastEngineCommand?: { mode: ThermostatMode; ts: string };
   /** Last decision the engine made (for /status). */
   lastComfortDecision?: ComfortDecision;
   lastPollTs?: string;

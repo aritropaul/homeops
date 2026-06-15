@@ -106,6 +106,27 @@ describe('StateStore manual override', () => {
   });
 });
 
+describe('StateStore.setLastEngineCommand', () => {
+  beforeEach(() => fakeKv.clear());
+
+  it('records the last engine-written mode and persists it', async () => {
+    const store = new StateStore();
+    await store.setLastEngineCommand('cool');
+    const fresh = new StateStore();
+    const state = await fresh.getState();
+    expect(state.lastEngineCommand?.mode).toBe('cool');
+    expect(state.lastEngineCommand?.ts).toBeTruthy();
+  });
+
+  it('overwrites the previous mode', async () => {
+    const store = new StateStore();
+    await store.setLastEngineCommand('cool');
+    await store.setLastEngineCommand('off');
+    const state = await store.getState();
+    expect(state.lastEngineCommand?.mode).toBe('off');
+  });
+});
+
 describe('StateStore.updatePollStatus', () => {
   beforeEach(() => fakeKv.clear());
 
