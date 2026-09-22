@@ -10,6 +10,7 @@ struct HomeOpsWidgetBundle: WidgetBundle {
         OverviewWidget()
         // WidgetBundleBuilder adapts ControlWidget automatically.
         LockControl()
+        ThermostatControl()
     }
 }
 
@@ -165,22 +166,81 @@ struct LockWidgetView: View {
 
 // MARK: - Climate widget
 
+/// Carries the *chosen* thermostat, not just the whole snapshot.
+struct ClimateEntry: TimelineEntry {
+    let date: Date
+    let thermostat: ThermostatEntry?
+    let isStale: Bool
+    let needsSetup: Bool
+}
+
+/// `AppIntentTimelineProvider` rather than the plain one, because this widget is
+/// user-configurable and the chosen thermostat arrives via the configuration.
+struct ClimateProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> ClimateEntry {
+        ClimateEntry(date: .now, thermostat: Snapshot.preview.primaryThermostat,
+                     isStale: false, needsSetup: false)
+    }
+
+    func snapshot(for configuration: SelectThermostatIntent, in context: Context) async -> ClimateEntry {
+        if context.isPreview {
+            return placeholder(in: context)
+        }
+        return entry(from: SnapshotCache().load(), configuration: configuration)
+    }
+
+    func timeline(for configuration: SelectThermostatIntent, in context: Context) async -> Timeline<ClimateEntry> {
+        guard SmartRentCredentials().isConfigured else {
+            let empty = ClimateEntry(date: .now, thermostat: nil, isStale: false, needsSetup: true)
+            return Timeline(entries: [empty], policy: .after(.now.addingTimeInterval(1800)))
+        }
+
+        var snapshot = SnapshotCache().load()
+        if let fresh = try? await withDeadline(seconds: 6, { try await SmartRentClient().snapshot() }) {
+            SnapshotCache().save(fresh)
+            snapshot = fresh
+        }
+        return Timeline(
+            entries: [entry(from: snapshot, configuration: configuration)],
+            policy: .after(.now.addingTimeInterval(900))
+        )
+    }
+
+    /// Resolves the configured thermostat, falling back to the default when the
+    /// widget was added without choosing one — or when the chosen device has
+    /// since left the hub.
+    private func entry(from snapshot: Snapshot?, configuration: SelectThermostatIntent) -> ClimateEntry {
+        let chosen = configuration.thermostat.flatMap { snapshot?.thermostat(id: $0.id) }
+            ?? snapshot?.primaryThermostat
+        return ClimateEntry(
+            date: .now,
+            thermostat: chosen,
+            isStale: snapshot?.isStale ?? true,
+            needsSetup: !SmartRentCredentials().isConfigured
+        )
+    }
+}
+
 struct ClimateWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: HomeOpsIdentifiers.WidgetKind.climate, provider: HomeProvider()) { entry in
+        AppIntentConfiguration(
+            kind: HomeOpsIdentifiers.WidgetKind.climate,
+            intent: SelectThermostatIntent.self,
+            provider: ClimateProvider()
+        ) { entry in
             ClimateWidgetView(entry: entry)
         }
-        .configurationDisplayName("Climate")
-        .description("A thermostat's current and target temperature.")
+        .configurationDisplayName("Thermostat")
+        .description("One thermostat's current and target temperature. Long-press to choose which.")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
     }
 }
 
 struct ClimateWidgetView: View {
     @Environment(\.widgetFamily) private var family
-    let entry: HomeEntry
+    let entry: ClimateEntry
 
-    private var primary: ThermostatEntry? { entry.snapshot?.primaryThermostat }
+    private var primary: ThermostatEntry? { entry.thermostat }
     private var device: ThermostatDevice? { primary?.device }
     private var mode: ThermostatMode { device?.mode ?? .unknown }
 

@@ -20,8 +20,7 @@ public enum HomeOpsIdentifiers {
 
     public enum ControlKind {
         public static let lock = "dev.aritro.homeops.control.lock"
-        public static let arrive = "dev.aritro.homeops.control.arrive"
-        public static let leave = "dev.aritro.homeops.control.leave"
+        public static let thermostat = "dev.aritro.homeops.control.thermostat"
     }
 
     /// Deep links the widgets use to open a specific screen.

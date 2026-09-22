@@ -234,8 +234,14 @@ public struct Snapshot: Codable, Sendable, Equatable {
         thermostats.first { $0.deviceID == id }
     }
 
-    /// The thermostat widgets default to when none is chosen.
-    public var primaryThermostat: ThermostatEntry? { thermostats.first }
+    /// The thermostat to show when the user hasn't picked one.
+    ///
+    /// Prefers one that's actually reporting: falling back to alphabetical
+    /// order picked a device that had been silent for a day, which is the worst
+    /// possible default for a glanceable widget.
+    public var primaryThermostat: ThermostatEntry? {
+        thermostats.first { $0.device.reachability == .live } ?? thermostats.first
+    }
 
     public var age: TimeInterval { Date.now.timeIntervalSince(fetchedAt) }
     public var isStale: Bool { age > 300 }
