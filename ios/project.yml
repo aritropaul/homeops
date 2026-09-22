@@ -1,0 +1,94 @@
+name: HomeOps
+
+options:
+  bundleIdPrefix: dev.aritro.homeops
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6"                    # language mode (4/4.2/5/6), not toolchain 6.2
+    DEVELOPMENT_TEAM: "2J3WW2KWBU"
+    # SE-0461 (nonisolated async runs on caller's actor) + isolated-conformance
+    # inference. Defaults to NO in Xcode 26; opt in explicitly.
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    # Set EXPLICITLY rather than relying on the default: sources disagree on
+    # whether Xcode 26 defaults this to nonisolated or MainActor.
+    SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+    # Shared/ compiles into BOTH the app and the widget extension; setting
+    # MainActor on only one would give the same source file different isolation
+    # per target. View models are annotated @MainActor explicitly instead.
+    # SWIFT_STRICT_CONCURRENCY is omitted: Swift 6 mode is already complete-as-errors.
+
+targets:
+
+  HomeOps:
+    type: application
+    platform: iOS
+    sources:
+      - path: HomeOps
+      - path: Shared
+    # An explicit Info.plist rather than INFOPLIST_KEY_* settings: CFBundleURLTypes
+    # is a nested array-of-dicts and INFOPLIST_KEY_* only expresses flat scalars.
+    # Every key the app needs is therefore declared here, deterministically.
+    info:
+      path: HomeOps/Info.plist
+      properties:
+        CFBundleDisplayName: HomeOps
+        UILaunchScreen: {}
+        # Missing this key is a hard runtime crash the first time Face ID runs,
+        # not a silent failure.
+        NSFaceIDUsageDescription: "Confirms it's you before unlocking the door."
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.aritro.homeops
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes: [homeops]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.aritro.homeops
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: HomeOps/HomeOps.entitlements
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+    dependencies:
+      - target: HomeOpsWidgets
+        embed: true
+    scheme:
+      testTargets:
+        - HomeOpsTests
+
+  HomeOpsWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HomeOpsWidgets
+      - path: Shared
+    info:
+      path: HomeOpsWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: HomeOps
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.aritro.homeops.widgets
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: HomeOpsWidgets/HomeOpsWidgets.entitlements
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+
+  HomeOpsTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: HomeOpsTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+    dependencies:
+      - target: HomeOps
