@@ -52,15 +52,21 @@ describe('config', () => {
     expect(() => mod.loadConfig()).toThrow(/HOMEOPS_KEY/);
   });
 
-  it('uses default PREHEAT_MODE=heat when unset', async () => {
+  it('defaults the thermostat mode to heat when unset', async () => {
     const c = await freshConfig();
-    expect(c.preheat.mode).toBe('heat');
+    expect(c.defaultThermostatMode).toBe('heat');
   });
 
-  it('accepts a valid PREHEAT_MODE', async () => {
+  it('accepts DEFAULT_THERMOSTAT_MODE', async () => {
+    process.env.DEFAULT_THERMOSTAT_MODE = 'cool';
+    const c = await freshConfig();
+    expect(c.defaultThermostatMode).toBe('cool');
+  });
+
+  it('still honours the legacy PREHEAT_MODE env var', async () => {
     process.env.PREHEAT_MODE = 'cool';
     const c = await freshConfig();
-    expect(c.preheat.mode).toBe('cool');
+    expect(c.defaultThermostatMode).toBe('cool');
   });
 
   it('rejects an invalid PREHEAT_MODE at load time', async () => {

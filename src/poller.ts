@@ -8,23 +8,22 @@
  *
  * REST polling runs on a chained setTimeout so a slow cycle can never overlap
  * with the next one.
+ *
+ * This service reports device state and enforces exactly one rule: auto-lock.
+ * Thermostats are reported and controlled on request; nothing here decides a
+ * setpoint on its own.
  */
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { SmartRentClient, parseLockState, parseThermostatState } from './smartrent.js';
 import { SmartRentSocket, type AttributeEvent } from './socket.js';
 import { getStore } from './store.js';
-import { getWeather } from './weather.js';
-import { decideComfort, type ComfortInputs } from './comfort.js';
-import { estimateRates, shouldPreconditionNow } from './thermal.js';
 import type {
   SmartRentDevice,
   LockDeviceState,
   ThermostatDeviceState,
   LockTracking,
   ThermostatMode,
-  Occupancy,
-  ComfortDecision,
 } from './types.js';
 
 let pollTimer: NodeJS.Timeout | null = null;
@@ -32,7 +31,6 @@ let pollInFlight = false;
 let smartRentClient: SmartRentClient | null = null;
 let socket: SmartRentSocket | null = null;
 let stopRequested = false;
-
 export function getSmartRentClient(): SmartRentClient {
   if (!smartRentClient) {
     smartRentClient = new SmartRentClient({
@@ -111,22 +109,6 @@ export async function pollDevices(): Promise<void> {
     state.lastPollTs = now;
     await store.saveState(state);
 
-    // Record B2 thermal history (for rate learning) and run the comfort engine
-    // on this fresh snapshot. Both are best-effort and must not fail the poll.
-    const b2 = state.devices.B2;
-    await store.appendThermalSample({
-      ts: now,
-      indoorF: b2.currentTempF,
-      outdoorF: (await getWeather())?.tempF,
-      mode: b2.mode,
-      setpointF: b2.targetTempF,
-    });
-    if (config.comfortAuto) {
-      await runComfortControl().catch((err) =>
-        logger.error({ err }, 'Comfort control (poll) failed'),
-      );
-    }
-
     logger.debug({ durationMs: Date.now() - t0 }, 'REST poll complete');
   } catch (err) {
     logger.error({ err, durationMs: Date.now() - t0 }, 'REST poll failed');
@@ -199,20 +181,20 @@ async function applyAttributeEvent(event: AttributeEvent): Promise<void> {
         break;
       }
       case 'current_temp':
-        updated.currentTempF = parseInt(event.value, 10) || undefined;
+        updated.currentTempF = parseFloat(event.value);
         break;
       case 'heating_setpoint':
         if (updated.mode === 'heat' || updated.mode === 'auto' || !updated.targetTempF) {
-          updated.targetTempF = parseInt(event.value, 10) || undefined;
+          updated.targetTempF = parseFloat(event.value);
         }
         break;
       case 'cooling_setpoint':
         if (updated.mode === 'cool') {
-          updated.targetTempF = parseInt(event.value, 10) || undefined;
+          updated.targetTempF = parseFloat(event.value);
         }
         break;
       case 'current_humidity':
-        updated.humidityPct = parseInt(event.value, 10) || undefined;
+        updated.humidityPct = parseFloat(event.value);
         break;
       default:
         return; // fan_mode / operating_state — captured at REST poll time
@@ -221,169 +203,6 @@ async function applyAttributeEvent(event: AttributeEvent): Promise<void> {
   }
 
   await store.saveState(state);
-
-  // A real-time B2 temperature change may have crossed the comfort band — react
-  // immediately rather than waiting for the next REST tick. The command
-  // throttle and the "already in target state" check keep this from looping on
-  // our own writes (which arrive back as mode/setpoint events, not current_temp).
-  if (key === 'B2' && event.name === 'current_temp' && config.comfortAuto) {
-    void runComfortControl().catch((err) =>
-      logger.error({ err }, 'Comfort control (socket) failed'),
-    );
-  }
-}
-
-// ── Comfort engine control loop ───────────────────────────────────────────────
-
-/** True when B2 is already doing essentially what the decision asks. */
-function decisionMatchesDevice(
-  decision: ComfortDecision,
-  b2: ThermostatDeviceState,
-): boolean {
-  if (decision.mode === 'off') return b2.mode === 'off';
-  if (b2.mode !== decision.mode) return false;
-  if (decision.setpointF === undefined || b2.targetTempF === undefined) return false;
-  return Math.abs(b2.targetTempF - decision.setpointF) < 0.5;
-}
-
-/**
- * Evaluate the comfort engine for B2 and apply a command if needed.
- *
- * Guards, in order: a manual override suspends the engine entirely; an
- * 'arriving' intent only pre-conditions once within the learned lead window;
- * the decision is skipped if B2 is already in the target state (hysteresis);
- * and commands are rate-limited (anti-short-cycle) unless forced. `force`
- * is used by explicit user actions (/arrive, /leave) that should act now.
- */
-export async function runComfortControl(
-  opts: { force?: boolean } = {},
-): Promise<ComfortDecision | null> {
-  const store = getStore();
-  const client = getSmartRentClient();
-  const prefs = config.comfort;
-
-  const state = await store.getState();
-  const b2 = state.devices.B2;
-
-  const override = await store.getActiveOverride();
-  if (override) {
-    // If a respected OFF is active but B2 is now running, the human turned it
-    // back on directly (thermostat/app) — release the pin and resume control.
-    if (override.mode === 'off' && b2.mode !== 'off' && b2.mode !== 'unknown') {
-      await store.clearManualOverride();
-      await store.setOccupancy('home');
-      logger.info({ b2Mode: b2.mode }, 'B2 turned on externally; clearing off-pin, resuming auto control');
-    } else {
-      logger.debug({ override }, 'Comfort engine suspended by manual override');
-      return null;
-    }
-  }
-
-  // Respect an externally-initiated OFF: if B2 is off but the engine's last
-  // command wasn't off, a human turned it off at the thermostat/app (we never
-  // see those as /thermostat commands). Pin it and stand down — "off means off"
-  // however it was turned off. The first known reading after boot just sets a
-  // baseline so a pre-existing off isn't mistaken for a fresh manual off.
-  if (b2.mode !== 'unknown') {
-    const engineMode = state.lastEngineCommand?.mode;
-    if (engineMode === undefined) {
-      await store.setLastEngineCommand(b2.mode);
-    } else if (b2.mode === 'off' && engineMode !== 'off') {
-      await store.setManualOverride(0, 'off', prefs.overrideTtlMinutes * 60_000);
-      const d: ComfortDecision = {
-        mode: 'off',
-        reason: 'B2 turned off externally → respecting it (engine stands down)',
-        ts: new Date().toISOString(),
-      };
-      await store.setLastComfortDecision(d);
-      logger.info('External OFF detected on B2; pinned manual-off, engine standing down');
-      return d;
-    }
-  }
-
-  const occState = state.occupancy;
-  const now = new Date();
-  const outdoor = await getWeather();
-
-  const inputs: ComfortInputs = {
-    occupancy: (occState?.intent ?? 'home') as Occupancy,
-    now,
-    indoorTempF: b2.currentTempF,
-    indoorHumidityPct: b2.humidityPct,
-    outdoor,
-  };
-
-  // 'arriving' — hold until the room needs to start moving toward the home
-  // target, using the learned heat/cool rate. Once inside that window (or once
-  // the ETA passes), treat it as 'home' and condition normally.
-  if (inputs.occupancy === 'arriving' && occState?.etaTs) {
-    const etaMinutes = (new Date(occState.etaTs).getTime() - now.getTime()) / 60000;
-    if (etaMinutes <= 0) {
-      await store.setOccupancy('home');
-      inputs.occupancy = 'home';
-    } else if (b2.currentTempF !== undefined) {
-      const homeDecision = decideComfort({ ...inputs, occupancy: 'home' }, prefs);
-      const tooEarly =
-        homeDecision &&
-        homeDecision.mode !== 'off' &&
-        homeDecision.setpointF !== undefined &&
-        !shouldPreconditionNow(
-          etaMinutes,
-          b2.currentTempF,
-          homeDecision.setpointF,
-          homeDecision.mode,
-          estimateRates(await store.getThermalSamples()),
-        );
-      if (tooEarly) {
-        const hold: ComfortDecision = {
-          mode: 'off',
-          reason: `arriving in ${Math.round(etaMinutes)} min — preconditioning not needed yet`,
-          ts: now.toISOString(),
-        };
-        await store.setLastComfortDecision(hold);
-        return hold;
-      }
-      inputs.occupancy = 'home';
-    }
-  }
-
-  const decision = decideComfort(inputs, prefs);
-  if (!decision) {
-    logger.debug('Comfort engine: no indoor reading, holding');
-    return null;
-  }
-  await store.setLastComfortDecision(decision);
-
-  if (decisionMatchesDevice(decision, b2)) {
-    // B2 already in the engine's desired mode — record it as engine-intended so
-    // a later idle-off isn't misread as a human turning it off.
-    await store.setLastEngineCommand(decision.mode);
-    logger.debug({ decision }, 'Comfort engine: B2 already in target state');
-    return decision;
-  }
-
-  if (!opts.force && (await store.isThrottled('comfort', prefs.controlMinMinutes * 60 * 1000))) {
-    logger.debug({ decision }, 'Comfort engine: throttled, deferring command');
-    return decision;
-  }
-
-  try {
-    if (decision.mode === 'off') {
-      await client.setThermostatMode(config.devices.thermostatB2Id, 'off');
-    } else {
-      await client.setThermostatTarget(
-        config.devices.thermostatB2Id,
-        decision.setpointF!,
-        decision.mode,
-      );
-    }
-    await store.recordAction('comfort');
-    await store.setLastEngineCommand(decision.mode);
-    logger.info({ decision }, 'Comfort engine applied to B2');
-  } catch (err) {
-    logger.error({ err, decision }, 'Comfort engine failed to apply');
-  }
-  return decision;
 }
 
 // ── Auto-lock rule ──────────────────────────────────────────────────────────

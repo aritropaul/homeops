@@ -55,75 +55,16 @@ describe('StateStore throttle logic', () => {
     await store.recordAction('unlock');
     expect(await store.isThrottled('unlock', 60_000)).toBe(true);
     expect(await store.isThrottled('lock', 60_000)).toBe(false);
-    expect(await store.isThrottled('preheat', 60_000)).toBe(false);
     expect(await store.isThrottled('autolock', 60_000)).toBe(false);
   });
 
   it('persists state to the fake KV', async () => {
     const store = new StateStore();
-    await store.recordAction('preheat');
+    await store.recordAction('lock');
     expect(fakeKv.has('homeops:state')).toBe(true);
     // New store reads from KV.
     const fresh = new StateStore();
-    expect(await fresh.isThrottled('preheat', 60_000)).toBe(true);
-  });
-});
-
-describe('StateStore manual override', () => {
-  beforeEach(() => fakeKv.clear());
-
-  it('a positive ttl sets untilTs and expires after it elapses', async () => {
-    const store = new StateStore();
-    await store.setManualOverride(70, 'cool', 60_000);
-    const ov = await store.getActiveOverride();
-    expect(ov?.untilTs).toBeTruthy();
-    expect(ov?.setpointF).toBe(70);
-  });
-
-  it('ttl <= 0 means no expiry: untilTs is absent and it stays active', async () => {
-    const store = new StateStore();
-    await store.setManualOverride(72, 'cool', 0);
-    const ov = await store.getActiveOverride();
-    expect(ov).not.toBeNull();
-    expect(ov?.untilTs).toBeUndefined();
-    expect(ov?.mode).toBe('cool');
-  });
-
-  it('an indefinite override survives a fresh store read', async () => {
-    const store = new StateStore();
-    await store.setManualOverride(0, 'off', 0);
-    const fresh = new StateStore();
-    const ov = await fresh.getActiveOverride();
-    expect(ov?.mode).toBe('off');
-    expect(ov?.untilTs).toBeUndefined();
-  });
-
-  it('clearManualOverride removes an indefinite override', async () => {
-    const store = new StateStore();
-    await store.setManualOverride(72, 'cool', 0);
-    await store.clearManualOverride();
-    expect(await store.getActiveOverride()).toBeNull();
-  });
-});
-
-describe('StateStore.setLastEngineCommand', () => {
-  beforeEach(() => fakeKv.clear());
-
-  it('records the last engine-written mode and persists it', async () => {
-    const store = new StateStore();
-    await store.setLastEngineCommand('cool');
-    const fresh = new StateStore();
-    const state = await fresh.getState();
-    expect(state.lastEngineCommand?.mode).toBe('cool');
-    expect(state.lastEngineCommand?.ts).toBeTruthy();
-  });
-
-  it('overwrites the previous mode', async () => {
-    const store = new StateStore();
-    await store.setLastEngineCommand('cool');
-    await store.setLastEngineCommand('off');
-    const state = await store.getState();
-    expect(state.lastEngineCommand?.mode).toBe('off');
+    expect(await fresh.isThrottled('lock', 60_000)).toBe(true);
   });
 });
 

@@ -7,9 +7,6 @@ export type LockState = 'locked' | 'unlocked' | 'unknown';
 export type ThermostatMode = 'heat' | 'cool' | 'auto' | 'off' | 'unknown';
 export type DeviceId = 'L1' | 'B1' | 'B2' | 'B3';
 
-/** Who's home / what the comfort engine should be optimizing for. */
-export type Occupancy = 'home' | 'away' | 'arriving' | 'sleep';
-
 export interface DeviceState {
   ts: string;
 }
@@ -45,58 +42,6 @@ export interface LockTracking {
 export interface Throttles {
   lastUnlockAt?: string;
   lastLockAt?: string;
-  lastPreheatAt?: string;
-  /** Last time the comfort engine issued a command to B2 (anti-short-cycle). */
-  lastComfortAt?: string;
-}
-
-/** Current comfort intent for the B2 engine. */
-export interface OccupancyState {
-  intent: Occupancy;
-  since: string;
-  /** For 'arriving': absolute time we expect to be home. */
-  etaTs?: string;
-}
-
-/**
- * A respected manual OFF on B2 (via /thermostat/:name/off). While active, the
- * comfort engine leaves B2 alone so it doesn't switch the human's "off" back on.
- * A manual ON does not create one of these — it hands B2 back to the engine.
- */
-export interface ManualOverride {
-  setpointF: number;
-  mode: 'heat' | 'cool' | 'auto' | 'off';
-  /**
-   * When the pin auto-expires. Absent = no expiry: the override holds until you
-   * change it again or send a presence command (/arrive, /leave, /sleep).
-   */
-  untilTs?: string;
-}
-
-/** The engine's most recent decision — surfaced on /status for visibility. */
-export interface ComfortDecision {
-  mode: 'heat' | 'cool' | 'off';
-  setpointF?: number;
-  reason: string;
-  ts: string;
-}
-
-/** Outdoor conditions from the weather provider. */
-export interface OutdoorWeather {
-  tempF: number;
-  humidityPct: number;
-  forecastHighF: number;
-  forecastLowF: number;
-  ts: string;
-}
-
-/** One row of B2 thermal history, used to learn heating/cooling rates. */
-export interface ThermalSample {
-  ts: string;
-  indoorF?: number;
-  outdoorF?: number;
-  mode: ThermostatMode;
-  setpointF?: number;
 }
 
 export interface HomeOpsState {
@@ -108,18 +53,6 @@ export interface HomeOpsState {
   };
   lockTracking: LockTracking;
   throttles: Throttles;
-  /** Comfort engine intent (defaults to 'home' when unset). */
-  occupancy?: OccupancyState;
-  /** Active manual override on B2, if any. */
-  manualOverride?: ManualOverride;
-  /**
-   * The last mode the engine actually wrote to B2 (or confirmed already present).
-   * Lets us tell an engine-initiated off (idle) apart from a human turning B2
-   * off at the thermostat/app — the latter is respected like a manual off.
-   */
-  lastEngineCommand?: { mode: ThermostatMode; ts: string };
-  /** Last decision the engine made (for /status). */
-  lastComfortDecision?: ComfortDecision;
   lastPollTs?: string;
   lastErrorTs?: string;
   lastError?: string;

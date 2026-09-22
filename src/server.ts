@@ -8,19 +8,15 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { getStore } from './store.js';
 import { startPoller, isPollerRunning, isSocketConnected } from './poller.js';
-import { getCachedWeather } from './weather.js';
 import {
   handleArrive,
   handleLeave,
   handleLock,
   handleUnlock,
-  handlePreheat,
   handleSetThermostat,
   handleThermostatOff,
   handleForceLock,
   handleForceUnlock,
-  handleArriving,
-  handleSleep,
 } from './actions.js';
 import type { StatusResponse } from './types.js';
 
@@ -145,28 +141,6 @@ export function createServer(): FastifyInstance {
       reply.status(200).send(await handleUnlock());
     });
 
-    protectedRoutes.post('/preheat', async (_req, reply) => {
-      reply.status(200).send(await handlePreheat());
-    });
-
-    // "I'll be home in N minutes" — pre-condition B2 to land on target on arrival.
-    protectedRoutes.post<{ Params: { eta: string } }>(
-      '/arriving/:eta',
-      async (request, reply) => {
-        const eta = parseInt(request.params.eta, 10);
-        if (isNaN(eta)) {
-          return reply.status(400).send({ ok: false, error: 'Invalid ETA' });
-        }
-        const response = await handleArriving(eta);
-        reply.status(response.ok ? 200 : 400).send(response);
-      },
-    );
-
-    // Switch to the cooler night comfort target.
-    protectedRoutes.post('/sleep', async (_req, reply) => {
-      reply.status(200).send(await handleSleep());
-    });
-
     protectedRoutes.post<{
       Params: { name: string; temp: string };
       Querystring: { mode?: string };
@@ -208,15 +182,9 @@ export function createServer(): FastifyInstance {
         lastPollTs: state.lastPollTs,
         lastErrorTs: state.lastErrorTs,
       };
-      // Surface lastError + socket state here, not on /health. Also the comfort
-      // engine's view: current intent, any manual pin, the last decision + why,
-      // and the outdoor weather it's reacting to.
+      // Surface lastError + socket state here, not on /health.
       reply.status(200).send({
         ...response,
-        occupancy: state.occupancy,
-        manualOverride: state.manualOverride,
-        comfort: state.lastComfortDecision,
-        weather: getCachedWeather(),
         lastError: state.lastError,
         socketConnected: isSocketConnected(),
       });

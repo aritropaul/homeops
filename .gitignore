@@ -6,3 +6,13 @@ dist/
 *.log
 .DS_Store
 _recovered_app/
+
+# Claude Code local state and worktrees
+.claude/
+
+# Xcode / xcodegen
+ios/.dd/
+ios/*.xcodeproj/
+ios/**/Info.plist
+ios/DerivedData/
+*.xcuserstate
