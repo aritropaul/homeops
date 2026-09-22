@@ -6,6 +6,7 @@ struct ThermostatCard: View {
 
     private var device: ThermostatDevice? { entry.device }
     private var mode: ThermostatMode { entry.device.pendingMode ?? entry.device.mode }
+    private var reachability: Reachability { entry.device.reachability }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -29,17 +30,22 @@ struct ThermostatCard: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 2) {
-                if let current = device?.currentTempF, device?.online == true {
+                // A stale reading is still a reading. Show it, dimmed, and say
+                // how old it is — blanking data we actually have tells the user
+                // less, not more.
+                if let current = entry.device.currentTempF, reachability != .unreachable {
                     Text("\(Int(current.rounded()))°")
                         .font(.title3.weight(.semibold))
+                        .monospacedDigit()
                         .contentTransition(.numericText(value: current))
+                        .foregroundStyle(reachability == .live ? .primary : .secondary)
                 } else {
-                    Text("—").font(.title3.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("—").font(.title3.weight(.semibold)).foregroundStyle(.tertiary)
                 }
-                // Suppressed when offline: a target implies a live reading.
-                if let target = device?.targetTempF, mode != .off, device?.online == true {
+                if let target = entry.device.targetTempF, mode != .off, reachability == .live {
                     Text("to \(Int(target.rounded()))°")
                         .font(.caption2)
+                        .monospacedDigit()
                         .foregroundStyle(mode.tint)
                 }
             }
@@ -54,7 +60,7 @@ struct ThermostatCard: View {
         }
         .padding(16)
         .background(.background.secondary, in: ConcentricRectangle())
-        .opacity(device?.online == false ? 0.55 : 1)
+        .opacity(reachability == .unreachable ? 0.5 : 1)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Double-tap to adjust \(entry.displayName).")
     }
@@ -70,12 +76,20 @@ struct ThermostatCard: View {
         }
     }
 
+    /// Distinguishes "we can't reach it" from "we have data, it's just old" —
+    /// SmartRent's online flag conflates the two and is frequently wrong.
     private var subtitle: String {
-        if device?.online == false { return "Unreachable" }
-        if let humidity = device?.humidityPct {
-            return "\(mode.displayName) · \(Int(humidity))% RH"
+        switch reachability {
+        case .unreachable:
+            return "Unreachable"
+        case .stale:
+            return reachability.ageDescription.map { "Last seen \($0)" } ?? "Stale"
+        case .live:
+            if let humidity = entry.device.humidityPct {
+                return "\(mode.displayName) · \(Int(humidity))% RH"
+            }
+            return mode.displayName
         }
-        return mode.displayName
     }
 }
 
@@ -149,7 +163,11 @@ struct ThermostatDetailView: View {
     }
 
     private var dialSubtitle: String? {
-        if !device.online { return "Unreachable" }
+        switch device.reachability {
+        case .unreachable: return "Unreachable"
+        case .stale: return device.reachability.ageDescription.map { "Last seen \($0)" }
+        case .live: break
+        }
         if draftMode == .off { return "Off" }
         if device.hasPendingWrite { return "Applying…" }
         return nil

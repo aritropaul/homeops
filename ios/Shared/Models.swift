@@ -41,32 +41,72 @@ public enum LockState: String, Codable, Sendable {
     }
 }
 
+/// How much to trust a device's readings.
+///
+/// SmartRent's device-level `online` flag is not reliable on its own: observed
+/// live, a thermostat reporting a fresh reading one minute ago was flagged
+/// `online=false`, while a lock whose newest reading was eight hours old was
+/// flagged `online=true`. Trusting that flag alone makes working devices
+/// disappear from the UI and dead ones look healthy.
+///
+/// Recency of an actual reading is the better signal, so it wins; the flag is
+/// only consulted when there's no reading to judge by.
+public enum Reachability: Sendable, Equatable, Codable {
+    case live
+    case stale(age: TimeInterval)
+    case unreachable
+
+    /// Anything newer than this is treated as current.
+    public static let freshWindow: TimeInterval = 30 * 60
+
+    public static func resolve(online: Bool, lastReadAt: Date?, now: Date = .now) -> Reachability {
+        guard let lastReadAt else { return online ? .live : .unreachable }
+        let age = now.timeIntervalSince(lastReadAt)
+        return age < freshWindow ? .live : .stale(age: age)
+    }
+
+    public var hasUsableReading: Bool { self != .unreachable }
+
+    /// Short, honest label for stale data — "3 hr ago", not silence.
+    public var ageDescription: String? {
+        guard case .stale(let age) = self else { return nil }
+        if age < 3600 { return "\(Int(age / 60)) min ago" }
+        if age < 86_400 { return "\(Int(age / 3600)) hr ago" }
+        let days = Int(age / 86_400)
+        return days == 1 ? "1 day ago" : "\(days) days ago"
+    }
+}
+
 // MARK: - Devices
 
 public struct LockDevice: Codable, Sendable, Equatable {
     public let lockState: LockState
     public let batteryPct: Int?
-    public let online: Bool
+    public let reachability: Reachability
     public let lastNotification: String?
 
     public init(
         lockState: LockState,
         batteryPct: Int? = nil,
-        online: Bool,
+        reachability: Reachability = .live,
         lastNotification: String? = nil
     ) {
         self.lockState = lockState
         self.batteryPct = batteryPct
-        self.online = online
+        self.reachability = reachability
         self.lastNotification = lastNotification
     }
 
     init(device: SRDevice) {
         self.lockState = LockState(attribute: device.state("locked"))
         self.batteryPct = device.battery_level
-        self.online = device.online ?? true
+        self.reachability = .resolve(online: device.online ?? true,
+                                     lastReadAt: device.lastReadAt)
         self.lastNotification = device.state("notifications")
     }
+
+    /// Kept for call sites that only care whether we can act on it.
+    public var online: Bool { reachability != .unreachable }
 }
 
 public struct ThermostatDevice: Codable, Sendable, Equatable {
@@ -74,7 +114,7 @@ public struct ThermostatDevice: Codable, Sendable, Equatable {
     public let currentTempF: Double?
     public let targetTempF: Double?
     public let humidityPct: Double?
-    public let online: Bool
+    public let reachability: Reachability
     /// Set while a write is in flight and the device hasn't confirmed it.
     public let pendingMode: ThermostatMode?
     public let pendingTargetTempF: Double?
@@ -84,7 +124,7 @@ public struct ThermostatDevice: Codable, Sendable, Equatable {
         currentTempF: Double? = nil,
         targetTempF: Double? = nil,
         humidityPct: Double? = nil,
-        online: Bool,
+        reachability: Reachability = .live,
         pendingMode: ThermostatMode? = nil,
         pendingTargetTempF: Double? = nil
     ) {
@@ -92,7 +132,7 @@ public struct ThermostatDevice: Codable, Sendable, Equatable {
         self.currentTempF = currentTempF
         self.targetTempF = targetTempF
         self.humidityPct = humidityPct
-        self.online = online
+        self.reachability = reachability
         self.pendingMode = pendingMode
         self.pendingTargetTempF = pendingTargetTempF
     }
@@ -100,7 +140,8 @@ public struct ThermostatDevice: Codable, Sendable, Equatable {
     init(device: SRDevice) {
         let mode = ThermostatMode(raw: device.state("mode"))
         self.mode = mode
-        self.online = device.online ?? true
+        self.reachability = .resolve(online: device.online ?? true,
+                                     lastReadAt: device.lastReadAt)
         self.currentTempF = Double(device.state("current_temp") ?? "")
         self.humidityPct = Double(device.state("current_humidity") ?? "")
 
@@ -129,6 +170,9 @@ public struct ThermostatDevice: Codable, Sendable, Equatable {
     public var hasPendingWrite: Bool {
         pendingMode != nil || pendingTargetTempF != nil
     }
+
+    /// Kept for call sites that only care whether we can act on it.
+    public var online: Bool { reachability != .unreachable }
 }
 
 // MARK: - Snapshot

@@ -163,7 +163,7 @@ struct SnapshotTests {
 @Suite("Lock presentation")
 struct LockPresentationTests {
     private func lock(_ state: LockState, online: Bool = true) -> LockDevice {
-        LockDevice(lockState: state, online: online)
+        LockDevice(lockState: state, reachability: online ? .live : .unreachable)
     }
 
     @Test("Confirmed states pass through")
@@ -261,5 +261,61 @@ struct PresentationTests {
         #expect(AppRoute.parse(URL(string: "homeops://thermostat")!) == nil)
         #expect(AppRoute.parse(URL(string: "homeops://elsewhere/11")!) == nil)
         #expect(AppRoute.parse(URL(string: "https://thermostat/11")!) == nil)
+    }
+}
+
+// MARK: - Reachability
+
+@Suite("Reachability")
+struct ReachabilityTests {
+    // SmartRent's `online` flag was observed lying in both directions on a live
+    // hub: a thermostat reporting 1 min ago flagged offline, a lock 8 hours
+    // stale flagged online. A fresh reading therefore outranks the flag.
+
+    @Test("A recent reading wins over an offline flag")
+    func freshBeatsFlag() {
+        let now = Date.now
+        let result = Reachability.resolve(
+            online: false,                                  // SmartRent says down
+            lastReadAt: now.addingTimeInterval(-60),        // but it reported a minute ago
+            now: now
+        )
+        #expect(result == .live)
+        #expect(result.hasUsableReading)
+    }
+
+    @Test("An old reading is stale, not unreachable — the data is still shown")
+    func oldIsStale() {
+        let now = Date.now
+        let result = Reachability.resolve(
+            online: true,                                   // flag claims fine
+            lastReadAt: now.addingTimeInterval(-8 * 3600),  // 8 hours old
+            now: now
+        )
+        guard case .stale = result else {
+            Issue.record("expected .stale, got \(result)")
+            return
+        }
+        #expect(result.hasUsableReading)
+        #expect(result.ageDescription == "8 hr ago")
+    }
+
+    @Test("Only a device with no reading at all falls back to the flag")
+    func noReadingFallsBackToFlag() {
+        #expect(Reachability.resolve(online: false, lastReadAt: nil) == .unreachable)
+        #expect(Reachability.resolve(online: true, lastReadAt: nil) == .live)
+    }
+
+    @Test("Age reads in sensible units")
+    func ageWording() {
+        let now = Date.now
+        func age(_ seconds: TimeInterval) -> String? {
+            Reachability.resolve(online: true, lastReadAt: now.addingTimeInterval(-seconds), now: now)
+                .ageDescription
+        }
+        #expect(age(45 * 60) == "45 min ago")
+        #expect(age(3 * 3600) == "3 hr ago")
+        #expect(age(26 * 3600) == "1 day ago")     // the real Adhya case — singular
+        #expect(age(50 * 3600) == "2 days ago")
     }
 }

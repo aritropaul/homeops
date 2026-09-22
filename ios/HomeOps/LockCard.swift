@@ -16,6 +16,7 @@ struct LockCard: View {
     let presentation: LockPresentation
     let batteryPct: Int?
     let lastNotification: String?
+    var reachability: Reachability = .live
     let biometric: BiometricKind
     let onTap: () -> Void
     let onLock: () -> Void
@@ -39,7 +40,9 @@ struct LockCard: View {
                             Image(systemName: presentation.symbolName)
                                 .font(.title2)
                                 .foregroundStyle(presentation.tint)
-                                .contentTransition(.symbolEffect(.replace))
+                                .contentTransition(.symbolEffect(.replace.downUp))
+                                // Jammed is the one state worth drawing the eye.
+                                .symbolEffect(.pulse, isActive: presentation == .jammed)
                         }
                     }
 
@@ -63,7 +66,7 @@ struct LockCard: View {
                 }
                 .padding(16)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LockPressStyle())
             .background(.background.secondary, in: ConcentricRectangle())
             .disabled(presentation.nextCommand == nil)
             .sensoryFeedback(.press(.toggle), trigger: presentation)
@@ -103,6 +106,9 @@ struct LockCard: View {
         }
         if presentation == .offline {
             return "Last state can't be trusted"
+        }
+        if case .stale = reachability, let age = reachability.ageDescription {
+            return "Last seen \(age)"
         }
         return lastNotification.map(Self.humanise)
     }

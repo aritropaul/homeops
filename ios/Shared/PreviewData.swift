@@ -11,7 +11,7 @@ extension Snapshot {
                 device: LockDevice(
                     lockState: .locked,
                     batteryPct: 82,
-                    online: true,
+                    reachability: .live,
                     lastNotification: "KEY_OR_THUMBTURN_UNLOCK"
                 )
             ),
@@ -20,21 +20,21 @@ extension Snapshot {
                     deviceID: 2, name: "Aritro",
                     device: ThermostatDevice(
                         mode: .cool, currentTempF: 71, targetTempF: 68,
-                        humidityPct: 52, online: true
+                        humidityPct: 52, reachability: .live
                     )
                 ),
                 ThermostatEntry(
                     deviceID: 3, name: "Adhya",
                     device: ThermostatDevice(
                         mode: .off, currentTempF: 70, targetTempF: 70,
-                        humidityPct: 48, online: true
+                        humidityPct: 48, reachability: .live
                     )
                 ),
                 ThermostatEntry(
                     deviceID: 4, name: "Sophia's controls",
                     device: ThermostatDevice(
                         mode: .heat, currentTempF: 69, targetTempF: 71,
-                        humidityPct: 44, online: true
+                        humidityPct: 44, reachability: .live
                     )
                 ),
             ],

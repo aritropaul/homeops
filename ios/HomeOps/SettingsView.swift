@@ -195,7 +195,7 @@ struct DiagnosticsView: View {
 
     @ViewBuilder
     private var errorSection: some View {
-        if let failure = model.failure {
+        if let failure = model.lastError {
             Section("Last error") {
                 Text(failure).font(.footnote).foregroundStyle(.red)
             }

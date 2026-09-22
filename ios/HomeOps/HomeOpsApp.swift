@@ -54,6 +54,21 @@ struct HomeOpsApp: App {
             NavigationStack {
                 DashboardView(model: model, route: $route)
             }
+            // Applied outside the navigation stack: inside it, any pushed
+            // screen draws over the toast layer.
+            .toasts(model.toasts) { model.dismissToast($0) }
+            .task {
+                #if DEBUG
+                // Lets a simulator run render a sample toast for visual checking.
+                if let kind = ProcessInfo.processInfo.environment["HOMEOPS_SEED_TOAST"] {
+                    switch kind {
+                    case "success": model.show(.success("Door locked"))
+                    case "error": model.show(.error("Can't reach SmartRent."))
+                    default: model.show(.info("Locking the door…"))
+                    }
+                }
+                #endif
+            }
             .onOpenURL { url in
                 if let parsed = AppRoute.parse(url) { route = parsed }
             }

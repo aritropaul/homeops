@@ -48,6 +48,23 @@ public enum SmartRentError: Error, Sendable, LocalizedError {
     }
 }
 
+/// Parses a SmartRent timestamp.
+///
+/// They sometimes carry fractional seconds and sometimes don't, and
+/// `ISO8601DateFormatter` rejects whichever shape it wasn't configured for, so
+/// both are tried. A fresh formatter is built per call rather than shared —
+/// `ISO8601DateFormatter` is not `Sendable`, and this is parsed a handful of
+/// times per refresh, not in a hot loop.
+public func parseSmartRentDate(_ string: String) -> Date? {
+    let withFraction = ISO8601DateFormatter()
+    withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = withFraction.date(from: string) { return date }
+
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: string)
+}
+
 public enum SmartRentAPI {
     public static let base = URL(string: "https://control.smartrent.com")!
     public static let socketURL = "wss://control.smartrent.com/socket/websocket?vsn=2.0.0"
@@ -91,6 +108,9 @@ public struct SRAttribute: Decodable, Sendable {
     public let name: String
     public let state: String?
     public let pending_state: String?
+    /// When the device last actually reported this attribute. More trustworthy
+    /// than the device-level `online` flag — see `Reachability`.
+    public let last_read_at: String?
 }
 
 public struct SRDevice: Decodable, Sendable {
@@ -107,6 +127,14 @@ public struct SRDevice: Decodable, Sendable {
 
     public func state(_ name: String) -> String? { attribute(name)?.state }
     public func pending(_ name: String) -> String? { attribute(name)?.pending_state }
+
+    /// The most recent moment any attribute on this device reported in.
+    public var lastReadAt: Date? {
+        attributes
+            .compactMap(\.last_read_at)
+            .compactMap { parseSmartRentDate($0) }
+            .max()
+    }
 }
 
 /// The hub devices endpoint returns either a bare array or a paginated object.

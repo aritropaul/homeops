@@ -22,9 +22,14 @@ public final class HomeViewModel {
     public private(set) var phase: Phase = .idle
     public private(set) var lastUpdated: Date?
 
-    /// Informational result of the last action (not a failure).
-    public private(set) var notice: String?
-    public private(set) var failure: String?
+    /// Transient results of things the user just did. Persistent conditions
+    /// (not signed in, stale readings) are NOT toasts — they stay inline.
+    public private(set) var toasts: [Toast] = []
+    /// Kept for the diagnostics screen; not shown as a banner.
+    public private(set) var lastError: String?
+
+    /// More than a few at once is noise, and the oldest are the least relevant.
+    private static let maxToasts = 3
 
     // The lock is never optimistically flipped; these track a real in-flight
     // command so the UI can show an explicit in-transit state.
@@ -94,16 +99,17 @@ public final class HomeViewModel {
             snapshot = fresh
             lastUpdated = .now
             phase = .loaded
-            failure = nil
+            lastError = nil
             cache.save(fresh)
             reloadWidgets()
             clearSettledLockCommand(against: fresh)
         } catch let error as SmartRentError {
             if case .cancelled = error { return }
             phase = .failed(error.localizedDescription)
-            failure = error.localizedDescription
+            lastError = error.localizedDescription
         } catch {
             phase = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
         }
     }
 
@@ -134,7 +140,7 @@ public final class HomeViewModel {
 
     public func run(_ command: LockCommand) async {
         guard let lock = snapshot?.lock else {
-            failure = SmartRentError.deviceNotFound.localizedDescription
+            show(.error(SmartRentError.deviceNotFound.localizedDescription))
             return
         }
 
@@ -143,8 +149,8 @@ public final class HomeViewModel {
                 reason: "Confirm it's you before unlocking the door"
             )
             switch outcome {
-            case .cancelled: return
-            case .failed(let message): failure = message; return
+            case .cancelled: return                       // silent: they backed out
+            case .failed(let message): show(.error(message)); return
             case .success: break
             }
         }
@@ -153,11 +159,16 @@ public final class HomeViewModel {
         lockCommandStartedAt = .now
         do {
             try await client.setLocked(command == .lock, deviceID: lock.deviceID)
-            notice = command == .lock ? "Locking…" : "Unlocking…"
+            show(.info(command == .lock ? "Locking the door…" : "Unlocking the door…"))
             await refresh()
+            // Only claim success once the device actually confirms.
+            if lockPresentation == (command == .lock ? .locked : .unlocked) {
+                toasts.removeAll { $0.kind == .info }
+                show(.success(command == .lock ? "Door locked" : "Door unlocked"))
+            }
         } catch {
-            failure = (error as? SmartRentError)?.localizedDescription
-                ?? error.localizedDescription
+            show(.error((error as? SmartRentError)?.localizedDescription
+                ?? error.localizedDescription))
             inFlightLock = nil
             lockCommandStartedAt = nil
         }
@@ -192,9 +203,10 @@ public final class HomeViewModel {
                     Int(value.rounded()), mode: writeMode, deviceID: entry.deviceID
                 )
                 await self.refresh()
+                self.show(.success("\(entry.name) set to \(Int(value.rounded()))°"))
             } catch {
-                self.failure = (error as? SmartRentError)?.localizedDescription
-                    ?? error.localizedDescription
+                self.show(.error((error as? SmartRentError)?.localizedDescription
+                    ?? error.localizedDescription))
             }
             self.setpointDrafts[entry.deviceID] = nil
         }
@@ -210,16 +222,27 @@ public final class HomeViewModel {
                 )
             }
             await refresh()
+            show(.success(mode == .off ? "\(entry.name) turned off"
+                                       : "\(entry.name) set to \(mode.displayName)"))
         } catch {
-            failure = (error as? SmartRentError)?.localizedDescription
-                ?? error.localizedDescription
+            show(.error((error as? SmartRentError)?.localizedDescription
+                ?? error.localizedDescription))
         }
     }
 
-    // MARK: - Banners
+    // MARK: - Toasts
 
-    public func dismissNotice() { notice = nil }
-    public func dismissFailure() { failure = nil }
+    public func show(_ toast: Toast) {
+        if case .error = toast.kind { lastError = toast.message }
+        toasts.append(toast)
+        if toasts.count > Self.maxToasts {
+            toasts.removeFirst(toasts.count - Self.maxToasts)
+        }
+    }
+
+    public func dismissToast(_ id: Toast.ID) {
+        toasts.removeAll { $0.id == id }
+    }
 
     private func reloadWidgets() {
         WidgetCenter.shared.reloadAllTimelines()
